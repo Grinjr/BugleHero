@@ -186,14 +186,28 @@ namespace BugleHero.Patches
 			return instance.bugle[clipIndex].length;
 		}
 
-		// Seamlessly switch to a new note without stopping
+		static int? queuedClip = null;
+		static float? queuedPitch = null;
+
 		static void SwitchToNote(BugleSFX instance, int clipIndex, float pitch)
 		{
+			if (stopCooldownActive)
+			{
+				// Queue the note to play after cooldown instead of ignoring
+				queuedClip = clipIndex;
+				queuedPitch = pitch;
+				Plugin.Instance.mls.LogInfo("Note queued due to cooldown.");
+				return;
+			}
 			if (instance == null) return;
 			if (instance.bugle == null || instance.bugle.Length == 0) return;
 			if (instance.buglePlayer == null) return;
 			if (!instance.gameObject.activeInHierarchy) return;
 			if (clipIndex < 0 || clipIndex >= instance.bugle.Length) return;
+
+			// Clear any queued note, since we're about to play this one now
+			queuedClip = null;
+			queuedPitch = null;
 
 			forcedClip = clipIndex;
 			forcedPitch = pitch;
@@ -281,36 +295,65 @@ namespace BugleHero.Patches
 			StopToot(instance);
 		}
 
-		[HarmonyPatch("RPC_StartToot")]
-		[HarmonyPrefix]
-		public static void OutputPitch(int clip, float pitch)
-		{
-			Plugin.Instance.mls.LogInfo($"RPC_StartToot called — Clip: {clip}, Pitch: {pitch}");
-			// no return means original method runs
-		}
-
 		static bool forceHold = false;
 		static int forcedClip = 0;
 		static float forcedPitch = 0f;
+
+		static bool stopCooldownActive = false;
+		static float stopCooldownEndTime = 0f;
+		const float stopCooldownDuration = 0.05f;
+
+		static IEnumerator LoopToot(BugleSFX instance)
+		{
+			if (instance == null) yield break;
+
+			// Stop current toot, clearing force hold etc
+			StopToot(instance);
+
+			// Wait a short time to let things properly reset (50ms)
+			yield return new WaitForSeconds(0.05f);
+
+			// Restart the note (same clip & pitch)
+			SwitchToNote(instance, forcedClip, forcedPitch);
+
+			// Reset start time for this clip so looping continues properly
+			holdStartTimes[forcedClip] = Time.time;
+		}
 
 		[HarmonyPrefix]
 		[HarmonyPatch(typeof(BugleSFX), "UpdateTooting")]
 		static bool Prefix_UpdateTooting(BugleSFX __instance)
 		{
-			if (!__instance.photonView.IsMine) return true; // skip forcing on others
+			if (!__instance.photonView.IsMine)
+				return true;
+
+			if (stopCooldownActive && Time.time >= stopCooldownEndTime)
+			{
+				stopCooldownActive = false;
+
+				// If a note is queued, play it now
+				if (queuedClip.HasValue && queuedPitch.HasValue)
+				{
+					SwitchToNote(__instance, queuedClip.Value, queuedPitch.Value);
+					queuedClip = null;
+					queuedPitch = null;
+				}
+			}
 
 			if (forceHold)
 			{
-				// check if clip time exceeded
 				float clipLength = GetClipLength(__instance, forcedClip);
 				if (clipLength > 0 && holdStartTimes.TryGetValue(forcedClip, out float startTime))
 				{
 					if (Time.time - startTime >= clipLength)
 					{
-						// Restart clip playback for seamless looping
-						__instance.buglePlayer.Stop();
-						__instance.buglePlayer.Play();
-						holdStartTimes[forcedClip] = Time.time; // reset start time
+						StopToot(__instance);
+						forceHold = false;
+
+						stopCooldownActive = true;
+						stopCooldownEndTime = Time.time + stopCooldownDuration;
+
+						return false;
 					}
 				}
 
@@ -319,7 +362,8 @@ namespace BugleHero.Patches
 					__instance.photonView.RPC("RPC_StartToot", RpcTarget.All, forcedClip, forcedPitch);
 					__instance.hold = true;
 				}
-				return false; // skip original UpdateTooting to keep forced hold active
+
+				return false;
 			}
 			else
 			{
@@ -328,7 +372,7 @@ namespace BugleHero.Patches
 					__instance.photonView.RPC("RPC_EndToot", RpcTarget.All);
 					__instance.hold = false;
 				}
-				return true; // allow normal UpdateTooting logic
+				return true;
 			}
 		}
 
