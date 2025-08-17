@@ -77,4 +77,4 @@ This project started as a quick prototype (~8 hours). It’s still **early in de
 ---
 
 ## License
-MIT License – see [LICENSE](LICENSE) for details.  
+GNUv3 License – see [LICENSE](LICENSE) for details.  
