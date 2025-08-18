@@ -5,6 +5,7 @@ using System;
 using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
+using System.Collections;
 
 namespace BugleHero.Patches
 {
@@ -13,7 +14,7 @@ namespace BugleHero.Patches
 	{
 		// Track all active notes instead of just one
 		private static HashSet<int> activeNotes = new HashSet<int>();
-		private static int? currentPlayingNote = null; // The note currently being played (bugle can only play one at a time)
+		private static int? currentPlayingNote = null;
 
 		private static int forcedClip = 0;
 		private static float forcedPitch = 0f;
@@ -22,9 +23,16 @@ namespace BugleHero.Patches
 		private static float loopStartTime = 0f;
 		private static float loopClipLength = 0f;
 
-		// Cleanup timer - if no activity for X seconds, force stop everything
+		private static int pendingClip = 0;
+		private static float pendingPitch = 0f;
+
+		// Cleanup timer
 		private static float lastActivityTime = 0f;
 		private static readonly float inactivityTimeout = 5f;
+
+		// Reduce coroutine overhead
+		private static Coroutine activeDelayCoroutine = null;
+		private static Coroutine activeRestartCoroutine = null;
 
 		const float loopRestartDelay = 0.05f;
 
@@ -112,7 +120,7 @@ namespace BugleHero.Patches
 				// If there are other active notes, play the most recent one
 				if (activeNotes.Count > 0)
 				{
-					int nextNote = activeNotes.Last(); // Play the most recently pressed note
+					int nextNote = activeNotes.Last();
 					OnMidiNoteOn(nextNote, instance);
 				}
 			}
@@ -128,6 +136,18 @@ namespace BugleHero.Patches
 			activeNotes.Clear();
 			currentPlayingNote = null;
 			forceHold = false;
+
+			// Cancel any active coroutines to prevent resource leaks
+			if (activeDelayCoroutine != null)
+			{
+				instance.StopCoroutine(activeDelayCoroutine);
+				activeDelayCoroutine = null;
+			}
+			if (activeRestartCoroutine != null)
+			{
+				instance.StopCoroutine(activeRestartCoroutine);
+				activeRestartCoroutine = null;
+			}
 
 			instance.hold = false;
 			tField?.SetValue(instance, false);
@@ -171,6 +191,10 @@ namespace BugleHero.Patches
 			forcedPitch = pitch;
 			forceHold = true;
 
+			
+			pendingClip = clipIndex;
+			pendingPitch = pitch;
+
 			currentClipField?.SetValue(instance, clipIndex);
 			currentPitchField?.SetValue(instance, pitch);
 			tField?.SetValue(instance, true);
@@ -195,7 +219,12 @@ namespace BugleHero.Patches
 				emission2.enabled = true;
 			}
 
-			instance.StartCoroutine(RemoteStartAfterDelay(instance, 0.05f, clipIndex, pitch));
+			// Cancel previous coroutine and start new one to prevent buildup
+			if (activeDelayCoroutine != null)
+			{
+				instance.StopCoroutine(activeDelayCoroutine);
+			}
+			activeDelayCoroutine = instance.StartCoroutine(RemoteStartAfterDelay(instance, 0.05f, clipIndex, pitch));
 		}
 
 		public static void StopToot(BugleSFX instance)
@@ -236,8 +265,12 @@ namespace BugleHero.Patches
 					__instance.photonView.RPC("RPC_EndToot", RpcTarget.All);
 					__instance.buglePlayer.Stop();
 
-					// Restart after delay
-					__instance.StartCoroutine(RestartAfterDelay(__instance, loopRestartDelay));
+					// Cancel previous restart coroutine and start new one
+					if (activeRestartCoroutine != null)
+					{
+						__instance.StopCoroutine(activeRestartCoroutine);
+					}
+					activeRestartCoroutine = __instance.StartCoroutine(RestartAfterDelay(__instance, loopRestartDelay));
 					loopStartTime = Time.time + loopRestartDelay;
 				}
 				return false;
@@ -245,7 +278,7 @@ namespace BugleHero.Patches
 			return true;
 		}
 
-		static System.Collections.IEnumerator RestartAfterDelay(BugleSFX instance, float delay)
+		static IEnumerator RestartAfterDelay(BugleSFX instance, float delay)
 		{
 			yield return new WaitForSeconds(delay);
 
@@ -255,12 +288,17 @@ namespace BugleHero.Patches
 				instance.photonView.RPC("RPC_StartToot", RpcTarget.Others, forcedClip, forcedPitch);
 				PlayToot(instance, forcedClip, forcedPitch);
 			}
+
+			activeRestartCoroutine = null; // Clear reference
 		}
 
-		static System.Collections.IEnumerator RemoteStartAfterDelay(BugleSFX instance, float delay, int clip, float pitch)
+		static IEnumerator RemoteStartAfterDelay(BugleSFX instance, float delay, int clip, float pitch)
 		{
 			yield return new WaitForSeconds(delay);
+
 			instance.photonView.RPC("RPC_StartToot", RpcTarget.Others, clip, pitch);
+
+			activeDelayCoroutine = null; // Clear reference
 		}
 
 		// Public method you can call from elsewhere to manually fix stuck notes

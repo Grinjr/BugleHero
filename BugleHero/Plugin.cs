@@ -4,6 +4,7 @@ using BepInEx.Logging;
 using BugleHero.Patches;
 using HarmonyLib;
 using System;
+using System.Linq;
 
 namespace BugleHero
 {
@@ -12,17 +13,13 @@ namespace BugleHero
 	{
 		public const string modGUID = "Grin.BugleHero";
 		public const string modName = "Bugle Hero";
-		public const string modVersion = "0.0.1.0";
-
+		public const string modVersion = "0.2.0";
 		private readonly Harmony harmony = new Harmony(modGUID);
-
 		internal static Plugin Instance;
-
 		internal ManualLogSource mls;
-
 		private MidiInputHandler midiHandler;
 
-		// Config entry for MIDI device name
+		// Config entries
 		public ConfigEntry<string> MidiDeviceName { get; private set; }
 
 		void Awake()
@@ -31,21 +28,19 @@ namespace BugleHero
 			{
 				Instance = this;
 			}
-
 			mls = Logger;
-
 			mls.LogInfo("Warming up the brass...");
-			mls.LogInfo("Toot toot! Ready for duty.");
-			mls.LogInfo("Calibrating toot pressure...");
-			mls.LogInfo("Now 400% more toot.");
-			mls.LogInfo($"Tootware version {modVersion} initialized.");
-			mls.LogInfo("Ready to bugle at a moment’s tootice.");
-			mls.LogInfo("Practice safe tooting.");
-
 			InitConfig();
-			InitMidi();
+			mls.LogInfo($"Tootware version {modVersion} initialized.");
 
+			mls.LogInfo("Calibrating toot pressure...");
+			midiHandler = new MidiInputHandler();
+			midiHandler.Initialize(Config); // pass the plugin config directly
 			harmony.PatchAll();
+			mls.LogInfo("Toot toot! Ready for duty.");
+
+			mls.LogInfo("Ready to bugle at a moment's tootice.");
+			mls.LogInfo("Practice safe tooting.");
 		}
 
 		void Update()
@@ -56,44 +51,32 @@ namespace BugleHero
 		void InitConfig()
 		{
 			// Collect device names
-			var deviceNames = new System.Collections.Generic.List<string>();
-			for (int i = 0; i < NAudio.Midi.MidiIn.NumberOfDevices; i++)
-			{
-				deviceNames.Add(NAudio.Midi.MidiIn.DeviceInfo(i).ProductName);
-			}
+			var deviceNames = Enumerable.Range(0, NAudio.Midi.MidiIn.NumberOfDevices)
+										.Select(i => NAudio.Midi.MidiIn.DeviceInfo(i).ProductName)
+										.ToArray();
 
-			if (deviceNames.Count == 0)
+			if (deviceNames.Length == 0)
 			{
-				mls.LogWarning("No MIDI devices found for config.");
-				deviceNames.Add("No MIDI devices detected");
+				mls.LogWarning("No MIDI devices found.");
+				deviceNames = new string[] { "No MIDI devices detected" };
 			}
-
-			// Bind config with AcceptableValueList
-			string[] deviceNamesArray = deviceNames.ToArray();
 
 			MidiDeviceName = Config.Bind(
 				"MIDI",
 				"DeviceName",
-				deviceNamesArray[0],
+				deviceNames[0],
 				new ConfigDescription(
 					"Select MIDI input device",
 					null,
-					new AcceptableValueList<string>(deviceNamesArray)
+					new AcceptableValueList<string>(deviceNames)
 				)
 			);
-		}
 
-		void InitMidi()
-		{
-			midiHandler = new MidiInputHandler();
-
-			// Listen to config changes to switch MIDI device dynamically
-			MidiDeviceName.SettingChanged += (sender, args) =>
+			// Forward setting changes directly to the handler
+			MidiDeviceName.SettingChanged += (s, e) =>
 			{
-				midiHandler.OpenMidiDeviceByName(MidiDeviceName.Value);
+				midiHandler?.OpenMidiDeviceByName(MidiDeviceName.Value);
 			};
-
-			midiHandler.OpenMidiDeviceByName(MidiDeviceName.Value);
 		}
 
 		public void DisposeMidi()
@@ -106,6 +89,5 @@ namespace BugleHero
 			try { DisposeMidi(); } catch { }
 			try { harmony.UnpatchSelf(); } catch { }
 		}
-
 	}
 }

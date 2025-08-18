@@ -56,32 +56,30 @@ public class MidiInputHandler
 
 	public void Initialize(ConfigFile config)
 	{
-		var deviceNamesList = Enumerable.Range(0, MidiIn.NumberOfDevices)
-										.Select(i => MidiIn.DeviceInfo(i).ProductName)
-										.ToList();
+		var deviceNames = Enumerable.Range(0, MidiIn.NumberOfDevices)
+									.Select(i => MidiIn.DeviceInfo(i).ProductName)
+									.ToList();
 
-		if (deviceNamesList.Count == 0)
+		if (deviceNames.Count == 0)
 		{
 			Plugin.Instance.mls.LogInfo("No MIDI devices detected.");
 			return;
 		}
 
-		midiDeviceName = config.Bind(
+		// Use the plugin's config entry if available
+		var configEntry = Plugin.Instance.MidiDeviceName ?? config.Bind(
 			"MIDI",
 			"DeviceName",
-			deviceNamesList.First(),
-			new ConfigDescription("Select MIDI input device", null,
-				new AcceptableValueList<string>(deviceNamesList.ToArray()))
+			deviceNames.First(),
+			new ConfigDescription(
+				"Select MIDI input device",
+				null,
+				new AcceptableValueList<string>(deviceNames.ToArray())
+			)
 		);
 
-
-
-		midiDeviceName.SettingChanged += (s, e) =>
-		{
-			OpenMidiDeviceByName(midiDeviceName.Value);
-		};
-
-		OpenMidiDeviceByName(midiDeviceName.Value);
+		configEntry.SettingChanged += (s, e) => OpenMidiDeviceByName(configEntry.Value);
+		OpenMidiDeviceByName(configEntry.Value);
 	}
 
 	public void OpenMidiDeviceByName(string deviceName)
